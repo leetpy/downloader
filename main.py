@@ -1,69 +1,92 @@
 #!/usr/bin/env python
-#-*- coding: utf-8 -*- 
-import sys
+# encoding: utf-8
 import os
-import shutil
-import httplib2
+import requests
+import sys
 import threading
-import Queue
+import urllib2
+from Queue import Queue
 from bs4 import BeautifulSoup
-import pdb
-import time
-import commands
 
 
-class DownloadThread(threading.Thread):
-    def __init__(self, uri, base_uri, queue):
-        super(DownloadThread, self).__init__()
-        self.uri = uri
-        self.base_uri = base_uri
-        self.queue = queue
-
-    def run(self):
-        print '[+] {}'.format(self.uri)
-        h = httplib2.Http()
-        resp, content = h.request(self.uri, 'GET')
-        if resp.status == 200:
-            content_type = resp['content-type']
-            if r'text/html' in content_type:
-                soup = BeautifulSoup(content)
-                tags = soup.find_all('a')
-                for each in tags:
-                    link = each.attrs['href']
-                    if not link.startswith('..'):
-                        self.queue.put(os.path.join(self.uri, link))
-            else:
-                file_path = self.uri.replace(self.base_uri, '')
-                if file_path.startswith('/'):
-                    file_path = file_path[1:]
-                save_file(file_path, content)
+def ensure_tree(path):
+    if os.path.isdir(path):
+        return
+    try:
+        os.makedirs(path)
+    except:
+        pass
 
 
-def save_file(file_path, content):
-    target_dir = os.path.dirname(file_path)
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir)
-    with open(file_path, 'w') as f:
-        print '[-] {}'.format(file_path)
-        f.write(content)
+def add_link(jobs, content, url):
+    soup = BeautifulSoup(content)
+    hrefs = soup.findAll('a')
+    alist = [i.attrs['href'] for i in hrefs]
+    for each in alist:
+        if each.startswith('..'):
+            continue
+        if each.startswith('http') or each.startswith('www'):
+            jobs.put(each)
+        else:
+            jobs.put(os.path.join(url, each))
 
 
-def start_download(queue, base_uri):
-    while not queue.empty():
-        uri = queue.get()
-        dl = DownloadThread(uri, base_uri, queue)
-        dl.start()
-        dl.join()
+def download_to_file(url, start_url, jobs):
+    print '[-] {}'.format(url)
+    response = urllib2.urlopen(url)
+    link_type = response.headers.getheader('content-type')
+    if 'text/html' in link_type:
+        add_link(jobs, response.read(), url)
+    else:
+        rel_link = url.replace(start_url, '')
+        if rel_link.startswith('/'):
+            rel_link = rel_link[1:]
+        dl_dir, dl_name = os.path.split(rel_link)
+        ensure_tree(dl_dir)
+        CHUNK = 1024
+        with open(rel_link, 'wb') as f:
+            while True:
+                chunk = response.read(CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+
+
+def get_page_type(url):
+    req = requests.head()
+    response = urllib2.urlopen(url)
+
+
+def create_threads(jobs, concurrency, start_url):
+    for _ in xrange(concurrency):
+        thread = threading.Thread(target=worker, args=(jobs, start_url,))
+        thread.daemon = True
+        thread.start()
+
+
+def worker(jobs, start_url):
+    while True:
+        try:
+            link = jobs.get()
+            download_to_file(link, start_url, jobs)
+        finally:
+            jobs.task_done()
+
+
+def process(jobs):
+    try:
+        jobs.join()
+    except KeyboardInterrupt:
+        sys.exit(1)
 
 
 if __name__ == '__main__':
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    start_uri = r'http://mirrors.163.com/centos/7.2.1511/atomic'
-    
-    queue = Queue.Queue()
-    queue.put(start_uri)
-    start_download(queue, start_uri)
-    #start_uri = r'http://mirrors.163.com/centos/7.2.1511/os/x86_64/Packages/389-ds-base-1.3.4.0-19.el7.x86_64.rpm'
-    # download(start_uri)
+    start_url = r'http://mirrors.163.com/centos/7.2.1511/'
 
+    jobs = Queue()
+    create_threads(jobs, 8, start_url)
+
+    jobs.put(start_url)
+
+    process(jobs)
 
