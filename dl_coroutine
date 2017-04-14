@@ -1,0 +1,86 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+import eventlet
+from bs4 import BeautifulSoup
+import os
+import time
+from urlparse import urlparse
+
+
+requests = eventlet.import_patched('requests')
+
+def ensure_tree(path):
+    if os.path.isdir(path):
+        return
+    try:
+        os.makedirs(path)
+    except:
+        pass
+
+
+def get_page_links(parent_url, page, jobs):
+    soup = BeautifulSoup(page)
+    hrefs = soup.findAll('a')
+    for i in hrefs:
+        lk = i.attrs['href']
+        if not lk.startswith('..') and not lk == './':
+            if lk.startswith('http') or lk.startswith('https'):
+                jobs.put(lk)
+            else:
+                jobs.put(os.path.join(parent_url, lk))
+
+
+def download(url, jobs):
+    parts = urlparse(url)
+    output = parts.path
+    if output.startswith('/'):
+        output = output[1:]
+    if os.path.exists(output):
+        return True, url
+    try:
+        r = requests.get(url, stream=True)
+        content_type = r.headers.get('Content-Type')
+        if content_type.lower() == 'text/html':
+            links = get_page_links(url, r.content, jobs)
+        else:
+            path = os.path.dirname(output)
+            ensure_tree(path)
+            with open(output, 'wb') as hanle:
+                if not r.ok:
+                    print "download fail"
+    
+                for block in r.iter_content(1024):
+                    hanle.write(block)
+            
+        # print "[x] %s" % output
+        return True, url
+    except:
+        return False, url
+    
+
+def add_jobs(filename, jobs):
+    with open(filename) as fp:
+        lines = fp.readlines()
+        for url in lines:
+            jobs.put(url.strip())
+
+
+def product(jobs):
+    pool = eventlet.GreenPool()
+    while True:
+        while not jobs.empty():
+            url = jobs.get()
+            pool.spawn_n(download, url, jobs)
+        pool.waitall()
+        if jobs.empty():
+            break
+
+if __name__ == '__main__':
+    t1 = time.time()
+    jobs = eventlet.Queue()
+    
+    jobs = eventlet.Queue()
+    add_jobs('urls.txt', jobs)
+    product(jobs)
+    t2 = time.time()
+    print t2 - t1
