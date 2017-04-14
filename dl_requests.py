@@ -5,7 +5,9 @@ import multiprocessing
 import os
 import Queue
 import requests
+import time
 import threading
+from urlparse import urlparse
 
 
 def ensure_tree(path):
@@ -30,8 +32,11 @@ def get_page_links(parent_url, page, jobs):
 
 
 def download(url, jobs):
-    output = '/'.join(url.split('/')[3:])
-    if os.path.exist(output):
+    parts = urlparse(url)
+    output = parts.path
+    if output.startswith('/'):
+        output = output[1:]
+    if os.path.exists(output):
         return True, url
     try:
         r = requests.get(url, stream=True)
@@ -48,7 +53,7 @@ def download(url, jobs):
                 for block in r.iter_content(1024):
                     hanle.write(block)
             
-        print "[x] %s" % output
+        # print "[x] %s" % output
         return True, url
     except:
         return False, url
@@ -103,13 +108,16 @@ def add_jobs(filename, jobs):
     with open(filename) as fp:
         lines = fp.readlines()
         for url in lines:
-            jobs.put(url)
+            jobs.put(url.strip())
 
 
 if __name__ == '__main__':
+    t1 = time.time()
     concurrency, filename = handle_commandline()
     jobs = Queue.Queue()
     results = Queue.Queue()
     create_threads(jobs, results, concurrency)
     todo = add_jobs(filename, jobs)
     process(todo, jobs, results, concurrency)
+    t2 = time.time()
+    print t2 - t1
